@@ -6,20 +6,20 @@ import (
 	"net"
 	"net/url"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	configv1informers "github.com/openshift/client-go/config/informers/externalversions/config/v1"
 	configv1listers "github.com/openshift/client-go/config/listers/config/v1"
-	"github.com/openshift/cluster-etcd-operator/pkg/dnshelpers"
-	"github.com/openshift/cluster-etcd-operator/pkg/operator/operatorclient"
 	"github.com/openshift/library-go/pkg/operator/events"
 	"github.com/openshift/library-go/pkg/operator/v1helpers"
 	"go.etcd.io/etcd/clientv3"
 	"go.etcd.io/etcd/etcdserver/etcdserverpb"
 	"go.etcd.io/etcd/pkg/transport"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -27,6 +27,9 @@ import (
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
+
+	"github.com/openshift/cluster-etcd-operator/pkg/dnshelpers"
+	"github.com/openshift/cluster-etcd-operator/pkg/operator/operatorclient"
 )
 
 const BootstrapIPAnnotationKey = "alpha.installer.openshift.io/etcd-bootstrap"
@@ -99,10 +102,12 @@ func (g *etcdClientGetter) getEtcdClient() (*clientv3.Client, error) {
 		etcdEndpoints = append(etcdEndpoints, fmt.Sprintf("https://%s:2379", bootstrapIP))
 	}
 
+	sort.Strings(etcdEndpoints)
+
 	g.clientLock.Lock()
 	defer g.clientLock.Unlock()
-	// TODO check if the connection is already closed
-	if reflect.DeepEqual(g.lastClientConfigKey, etcdEndpoints) {
+	// return cached client if endpoints are equal and connection is active
+	if reflect.DeepEqual(g.lastClientConfigKey, etcdEndpoints) && g.cachedClient.ActiveConnection().GetState() == connectivity.Ready {
 		return g.cachedClient, nil
 	}
 
